@@ -1,12 +1,10 @@
 import os
 import numpy as np
-import time
-import datetime
 import torch
-import torchvision
 from PIL import Image
 from torch import optim
-from torch.autograd import Variable
+from torch.optim.lr_scheduler import CosineAnnealingLR
+import torch.nn.functional as F
 from evaluation import *
 from network import U_Net, R2U_Net, R2U_NetPP, AttU_Net, R2AttU_Net
 import csv
@@ -14,7 +12,6 @@ import csv
 
 class Solver(object):
     def __init__(self, config, train_loader, valid_loader, test_loader):
-
         # Data loader
         self.train_loader = train_loader
         self.valid_loader = valid_loader
@@ -37,12 +34,7 @@ class Solver(object):
 
         # Training settings
         self.num_epochs = config.num_epochs
-        self.num_epochs_decay = config.num_epochs_decay
         self.batch_size = config.batch_size
-
-        # Step size
-        self.log_step = config.log_step
-        self.val_step = config.val_step
 
         # Path
         self.model_path = config.model_path
@@ -53,7 +45,6 @@ class Solver(object):
         self.build_model()
 
     def build_model(self):
-        """Build generator and discriminator."""
         if self.model_type == 'U_Net':
             self.unet = U_Net(img_ch=self.img_ch, output_ch=self.output_ch)
         elif self.model_type == 'R2U_Net':
@@ -65,8 +56,8 @@ class Solver(object):
         elif self.model_type == 'R2AttU_Net':
             self.unet = R2AttU_Net(img_ch=self.img_ch, output_ch=self.output_ch, t=self.t)
 
-        self.optimizer = optim.Adam(list(self.unet.parameters()),
-                                    self.lr, [self.beta1, self.beta2])
+        self.optimizer = optim.Adam(self.unet.parameters(), lr=self.lr, betas=(self.beta1, self.beta2))
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=self.num_epochs, eta_min=1e-6)
         self.unet.to(self.device)
 
         # self.print_network(self.unet, self.model_type)
@@ -76,10 +67,6 @@ class Solver(object):
         print(model)
         print(name)
         print("The number of parameters: {}".format(sum(p.numel() for p in model.parameters())))
-
-    def update_lr(self, lr):
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
 
     def reset_grad(self):
         """Zero the gradient buffers."""
@@ -97,208 +84,97 @@ class Solver(object):
                 break
 
         n = min(3, images.size(0))
-
         for i in range(n):
-            img = images[i].cpu()              # (3, H, W)
-            gt = GT[i].cpu()                   # (1, H, W)
-            sr = SR[i].cpu()                   # (1, H, W)
+            img = images[i].cpu()
+            gt = GT[i].cpu()
+            sr = SR[i].cpu()
 
-            # Make sure gt and sr become 3-channel
+            # make GT & SR 3-channel for visualization
             if gt.size(0) == 1:
-                gt = gt.repeat(3, 1, 1)
+                gt_viz = gt.repeat(3,1,1)
+            else:
+                gt_viz = gt
             if sr.size(0) == 1:
-                sr = sr.repeat(3, 1, 1)
+                sr_viz = sr.repeat(3,1,1)
+            else:
+                sr_viz = sr
 
-            # (C, H, W) -> (H, W, C)
-            img = img.permute(1, 2, 0)
-            gt  = gt.permute(1, 2, 0)
-            sr  = sr.permute(1, 2, 0)
+            img = (img.permute(1,2,0) * 255).byte().numpy()
+            gt_viz = (gt_viz.permute(1,2,0) * 255).byte().numpy()
+            sr_viz = (sr_viz.permute(1,2,0) * 255).byte().numpy()
 
-            # Normalize to 0–255 uint8
-            img = (img * 255).byte().numpy()
-            gt  = (gt  * 255).byte().numpy()
-            sr  = (sr  * 255).byte().numpy()
-
-            # vertical stacking
-            combined = np.vstack([img, gt, sr])
-
-            Image.fromarray(combined).save(f"{save_dir}/sample_{i+1}.png")
-
+            combined = np.vstack([img, gt_viz, sr_viz])
+            Image.fromarray(combined).save(os.path.join(save_dir, f"sample_{i+1}.png"))
 
     def train(self):
-        #====================================== Training ===========================================#
-        
         os.makedirs(self.model_path, exist_ok=True)
-        unet_path = os.path.join(self.model_path, '%s-%d-%.4f-%d-%.4f.pkl' % (self.model_type, self.num_epochs, self.lr, self.num_epochs_decay, self.augmentation_prob))
+        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pkl')
 
-        # U-Net Train
         if os.path.isfile(unet_path):
-            # Load the pretrained Encoder
             self.unet.load_state_dict(torch.load(unet_path))
-            print('%s is Successfully Loaded from %s'%(self.model_type, unet_path))
-        else:
-            # Train for Encoder
-            lr = self.lr
-            best_unet_score = 0.0
+            print(f'{self.model_type} loaded from {unet_path}')
+            return
 
-            for epoch in range(self.num_epochs):
-                print('Epoch [%d/%d]' % (epoch+1, self.num_epochs))
-                self.unet.train(True)
-                epoch_loss = 0
-                
-                acc = 0.0       # Accuracy
-                SE = 0.0        # Sensitivity (Recall)
-                SP = 0.0        # Specificity
-                PC = 0.0        # Precision
-                F1 = 0.0        # F1 Score
-                JS = 0.0        # Jaccard Similarity
-                DC = 0.0        # Dice Coefficient
-                length = 0
+        best_unet_score = -1.0
 
-                for i, (images, GT) in enumerate(self.train_loader):
-                    # GT : Ground Truth
-                    images = images.to(self.device)
-                    GT = GT.to(self.device)
+        for epoch in range(self.num_epochs):
+            # Training
+            print(f'Epoch [{epoch+1}/{self.num_epochs}]')
+            self.unet.train()
+            epoch_loss = 0.0
 
-                    has_gt = GT.sum() > 0   # GT is non-empty only if real mask exists
+            acc = SE = SP = PC = F1 = JS = DC = 0.0
+            length = 0
 
-                    if has_gt:
-                        # SR : Segmentation Result
-                        SR = torch.sigmoid(self.unet(images))
-                        SR_flat = SR.view(SR.size(0), -1)
-                        GT_flat = GT.view(GT.size(0), -1)
-                        loss = self.criterion(SR_flat, GT_flat)
-                        epoch_loss += loss.item()
-
-                        # Backprop + optimize
-                        self.reset_grad()
-                        loss.backward()
-                        self.optimizer.step()
-
-                        acc += get_accuracy(SR, GT)
-                        SE += get_sensitivity(SR, GT)
-                        SP += get_specificity(SR, GT)
-                        PC += get_precision(SR, GT)
-                        F1 += get_F1(SR, GT)
-                        JS += get_JS(SR, GT)
-                        DC += get_DC(SR, GT)
-                        length += images.size(0)
-
-                if length == 0:
-                    acc = SE = SP = PC = F1 = JS = DC = None
-                else:
-                    acc /= length
-                    SE /= length
-                    SP /= length
-                    PC /= length
-                    F1 /= length
-                    JS /= length
-                    DC /= length
-
-                # Print the log info
-                print('Loss: %.4f, \n[Training] Acc: %.4f, SE: %.4f, SP: %.4f, PC: %.4f, F1: %.4f, JS: %.4f, DC: %.4f' % (
-                      epoch_loss,\
-                      acc, SE, SP, PC, F1, JS, DC))
-
-                # Decay learning rate
-                if (epoch+1) > (self.num_epochs - self.num_epochs_decay):
-                    lr -= (self.lr / float(self.num_epochs_decay))
-                    self.update_lr(lr)
-                    print ('Decay learning rate to lr: {}.'.format(lr))
-
-
-                #===================================== Validation ====================================#
-                self.unet.train(False)
-                self.unet.eval()
-
-                acc = 0.0       # Accuracy
-                SE = 0.0        # Sensitivity (Recall)
-                SP = 0.0        # Specificity
-                PC = 0.0        # Precision
-                F1 = 0.0        # F1 Score
-                JS = 0.0        # Jaccard Similarity
-                DC = 0.0        # Dice Coefficient
-                length=0
-
-                for i, (images, GT) in enumerate(self.valid_loader):
-
-                    images = images.to(self.device)
-                    GT = GT.to(self.device)
-
-                    has_gt = GT.sum() > 0   # GT is non-empty only if real mask exists
-
-                    if has_gt:
-                        SR = torch.sigmoid(self.unet(images))
-                        acc += get_accuracy(SR, GT)
-                        SE += get_sensitivity(SR, GT)
-                        SP += get_specificity(SR, GT)
-                        PC += get_precision(SR, GT)
-                        F1 += get_F1(SR, GT)
-                        JS += get_JS(SR, GT)
-                        DC += get_DC(SR, GT)
-
-                        length += images.size(0)
-
-                if length == 0:
-                    acc = SE = SP = PC = F1 = JS = DC = None
-                else:
-                    acc /= length
-                    SE /= length
-                    SP /= length
-                    PC /= length
-                    F1 /= length
-                    JS /= length
-                    DC /= length
-                unet_score = JS + DC
-
-                print('[Validation] Acc: %.4f, SE: %.4f, SP: %.4f, PC: %.4f, F1: %.4f, JS: %.4f, DC: %.4f'%(acc, SE, SP, PC, F1, JS, DC))
-                
-                '''
-                torchvision.utils.save_image(images.data.cpu(),
-                                            os.path.join(self.result_path,
-                                                        '%s_valid_%d_image.png'%(self.model_type, epoch+1)))
-                torchvision.utils.save_image(SR.data.cpu(),
-                                            os.path.join(self.result_path,
-                                                        '%s_valid_%d_SR.png'%(self.model_type, epoch+1)))
-                torchvision.utils.save_image(GT.data.cpu(),
-                                            os.path.join(self.result_path,
-                                                        '%s_valid_%d_GT.png'%(self.model_type, epoch+1)))
-                '''
-
-
-                # Save Best U-Net model
-                if unet_score > best_unet_score:
-                    best_unet_score = unet_score
-                    best_epoch = epoch
-                    best_unet = self.unet.state_dict()
-                    print('Best %s model score : %.4f'%(self.model_type, best_unet_score))
-                    torch.save(best_unet, unet_path)
-    
-            #===================================== Test ====================================#
-            del self.unet
-            del best_unet
-            self.build_model()
-            self.unet.load_state_dict(torch.load(unet_path))
-            
-            self.unet.train(False)
-            self.unet.eval()
-
-            acc = 0.0       # Accuracy
-            SE = 0.0        # Sensitivity (Recall)
-            SP = 0.0        # Specificity
-            PC = 0.0        # Precision
-            F1 = 0.0        # F1 Score
-            JS = 0.0        # Jaccard Similarity
-            DC = 0.0        # Dice Coefficient
-            length=0
-            for i, (images, GT) in enumerate(self.test_loader):
-
+            for images, GT in self.train_loader:
                 images = images.to(self.device)
                 GT = GT.to(self.device)
 
-                has_gt = GT.sum() > 0   # GT is non-empty only if real mask exists
+                # GT is binary 0/1; if empty mask then skip training step
+                if GT.sum().item() == 0:
+                    continue
 
-                if has_gt:
+                SR = torch.sigmoid(self.unet(images))
+                SR_flat = SR.view(SR.size(0), -1)
+                GT_flat = GT.view(GT.size(0), -1)
+
+                loss = self.criterion(SR_flat, GT_flat)
+                epoch_loss += loss.item()
+
+                self.reset_grad()
+                loss.backward()
+                self.optimizer.step()
+
+                acc += get_accuracy(SR, GT)
+                SE += get_sensitivity(SR, GT)
+                SP += get_specificity(SR, GT)
+                PC += get_precision(SR, GT)
+                F1 += get_F1(SR, GT)
+                JS += get_JS(SR, GT)
+                DC += get_DC(SR, GT)
+                length += images.size(0)
+
+            if length > 0:
+                acc /= length; SE /= length; SP /= length; PC /= length
+                F1 /= length; JS /= length; DC /= length
+            else:
+                acc = SE = SP = PC = F1 = JS = DC = None
+
+            print(f'Loss: {epoch_loss:.4f}\n[Training] Acc: {acc}, SE: {SE}, SP: {SP}, PC: {PC}, F1: {F1}, JS: {JS}, DC: {DC}')
+
+            # Validation
+            self.unet.eval()
+            acc = SE = SP = PC = F1 = JS = DC = 0.0
+            length = 0
+
+            with torch.no_grad():
+                for images, GT in self.valid_loader:
+                    images = images.to(self.device)
+                    GT = GT.to(self.device)
+
+                    if GT.sum().item() == 0:
+                        continue
+
                     SR = torch.sigmoid(self.unet(images))
                     acc += get_accuracy(SR, GT)
                     SE += get_sensitivity(SR, GT)
@@ -307,28 +183,61 @@ class Solver(object):
                     F1 += get_F1(SR, GT)
                     JS += get_JS(SR, GT)
                     DC += get_DC(SR, GT)
-                            
                     length += images.size(0)
-            
-            if length == 0:
-                acc = SE = SP = PC = F1 = JS = DC = None
-            else:
-                acc /= length
-                SE /= length
-                SP /= length
-                PC /= length
-                F1 /= length
-                JS /= length
-                DC /= length
-            unet_score = JS + DC
 
-            save_dir = os.path.join(
-                self.model_path,
-                '%s-%d-%.4f-%d-%.4f' % (self.model_type, self.num_epochs, self.lr, self.num_epochs_decay, self.augmentation_prob)
-            )
-            self.save_samples(save_dir)
-            os.makedirs(self.result_path, exist_ok=True)
-            f = open(os.path.join(self.result_path, 'result.csv'), 'a', encoding='utf-8', newline='')
+            if length > 0:
+                acc /= length; SE /= length; SP /= length; PC /= length
+                F1 /= length; JS /= length; DC /= length
+            else:
+                acc = SE = SP = PC = F1 = JS = DC = None
+
+            print(f'[Validation] Acc: {acc}, SE: {SE}, SP: {SP}, PC: {PC}, F1: {F1}, JS: {JS}, DC: {DC}')
+
+            # Decay learning rate
+            self.scheduler.step()
+            print("Current LR:", self.optimizer.param_groups[0]["lr"])
+
+            unet_score = (JS if JS is not None else 0.0) + (DC if DC is not None else 0.0)
+            if unet_score > best_unet_score:
+                best_unet_score = unet_score
+                torch.save(self.unet.state_dict(), unet_path)
+                print(f"Saved best model (score={best_unet_score:.4f}) to {unet_path}")
+
+        # Test (load best model)
+        self.unet.load_state_dict(torch.load(unet_path))
+        self.unet.eval()
+
+        acc = SE = SP = PC = F1 = JS = DC = 0.0
+        length = 0
+
+        with torch.no_grad():
+            for images, GT in self.test_loader:
+                images = images.to(self.device)
+                GT = GT.to(self.device)
+
+                if GT.sum().item() == 0:
+                    continue
+
+                SR = torch.sigmoid(self.unet(images))
+                acc += get_accuracy(SR, GT)
+                SE += get_sensitivity(SR, GT)
+                SP += get_specificity(SR, GT)
+                PC += get_precision(SR, GT)
+                F1 += get_F1(SR, GT)
+                JS += get_JS(SR, GT)
+                DC += get_DC(SR, GT)
+                length += images.size(0)
+
+        if length > 0:
+            acc /= length; SE /= length; SP /= length; PC /= length
+            F1 /= length; JS /= length; DC /= length
+        else:
+            acc = SE = SP = PC = F1 = JS = DC = None
+
+        # save sample outputs
+        save_dir = os.path.join(self.model_path, f"{self.model_type}-{self.num_epochs}-{self.lr:.6f}")
+        self.save_samples(save_dir)
+        os.makedirs(self.result_path, exist_ok=True)
+        with open(os.path.join(self.result_path, 'result.csv'), 'a', newline='') as f:
             wr = csv.writer(f)
-            wr.writerow([self.model_type, acc, SE, SP, PC, F1, JS, DC, self.lr, best_epoch, self.num_epochs, self.num_epochs_decay, self.augmentation_prob])
-            f.close()
+            wr.writerow([self.model_type, acc, SE, SP, PC, F1, JS, DC, self.lr])

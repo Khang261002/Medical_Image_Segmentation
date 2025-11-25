@@ -3,53 +3,56 @@ import torch
 # SR : Segmentation Result
 # GT : Ground Truth
 
-def get_accuracy(SR, GT, threshold=0.5):
-    SR = (SR > threshold)
-    GT = (GT > threshold)
+_eps = 1e-6
 
-    corr = torch.sum(SR==GT)
-    tensor_size = SR.size(0)*SR.size(1)*SR.size(2)*SR.size(3)
+def _binarize_inputs(SR, GT, threshold=0.5):
+    SRb = (SR > threshold)
+    GTb = (GT > threshold)
+    return SRb, GTb
+
+def get_accuracy(SR, GT, threshold=0.5):
+    SRb, GTb = _binarize_inputs(SR, GT, threshold)
+
+    corr = torch.sum(SRb==GTb)
+    tensor_size = SRb.size(0)*SRb.size(1)*SRb.size(2)*SRb.size(3)
     acc = float(corr) / float(tensor_size)
 
     return acc
 
 def get_sensitivity(SR, GT, threshold=0.5):
     # Sensitivity == Recall
-    SR = (SR > threshold)
-    GT = (GT > threshold)
+    SRb, GTb = _binarize_inputs(SR, GT, threshold)
 
     # TP : True Positive
     # FN : False Negative
-    TP = (SR & GT)
-    FN = ((~SR) & GT)
+    TP = (SRb & GTb)
+    FN = ((~SRb) & GTb)
 
-    SE = float(torch.sum(TP)) / (float(torch.sum(TP + FN)) + 1e-6)
+    SE = float(torch.sum(TP)) / (float(torch.sum(TP + FN)) + _eps)
 
     return SE
 
 def get_specificity(SR, GT, threshold=0.5):
-    SR = (SR > threshold)
-    GT = (GT > threshold)
+    SRb, GTb = _binarize_inputs(SR, GT, threshold)
 
     # TN : True Negative
     # FP : False Positive
-    TN = ((~SR) & (~GT))
-    FP = (SR & (~GT))
+    TN = ((~SRb) & (~GTb))
+    FP = (SRb & (~GTb))
 
-    SP = float(torch.sum(TN)) / (float(torch.sum(TN + FP)) + 1e-6)
+    SP = float(torch.sum(TN)) / (float(torch.sum(TN + FP)) + _eps)
 
     return SP
 
 def get_precision(SR, GT, threshold=0.5):
-    SR = (SR > threshold)
-    GT = (GT > threshold)
+    SRb, GTb = _binarize_inputs(SR, GT, threshold)
 
     # TP : True Positive
     # FP : False Positive
-    TP = (SR & GT)
-    FP = (SR & (~GT))
+    TP = (SRb & GTb)
+    FP = (SRb & (~GTb))
 
-    PC = float(torch.sum(TP)) / (float(torch.sum(TP + FP)) + 1e-6)
+    PC = float(torch.sum(TP)) / (float(torch.sum(TP + FP)) + _eps)
 
     return PC
 
@@ -58,28 +61,26 @@ def get_F1(SR, GT, threshold=0.5):
     SE = get_sensitivity(SR, GT, threshold=threshold)
     PC = get_precision(SR, GT, threshold=threshold)
 
-    F1 = (2 * SE * PC) / (SE + PC + 1e-6)
+    F1 = (2 * SE * PC) / (SE + PC + _eps)
 
     return F1
 
 def get_JS(SR, GT, threshold=0.5):
     # JS : Jaccard similarity
-    SR = (SR > threshold)
-    GT = (GT > threshold)
+    SRb, GTb = _binarize_inputs(SR, GT, threshold)
     
-    Inter = torch.sum(SR & GT)
-    Union = torch.sum(SR | GT)
+    Inter = torch.sum(SRb & GTb)
+    Union = torch.sum(SRb | GTb)
 
-    JS = float(Inter) / (float(Union) + 1e-6)
+    JS = float(Inter) / (float(Union) + _eps)
     
     return JS
 
 def get_DC(SR, GT, threshold=0.5):
     # DC : Dice Coefficient
-    SR = (SR > threshold)
-    GT = (GT > threshold)
+    SRb, GTb = _binarize_inputs(SR, GT, threshold)
 
-    Inter = torch.sum(SR & GT)
-    DC = float(2 * Inter) / (float(torch.sum(SR) + torch.sum(GT)) + 1e-6)
+    Inter = torch.sum(SRb & GTb)
+    DC = float(2 * Inter) / (float(torch.sum(SRb) + torch.sum(GTb)) + _eps)
 
     return DC
