@@ -4,8 +4,9 @@ from glob import glob
 from PIL import Image
 import torch
 from torch.utils import data
-from torchvision import transforms as T
-from torchvision.transforms import functional as F
+from torchvision.transforms import v2 as T
+from torchvision.transforms.v2 import functional as TF
+from torchvision.transforms.v2 import InterpolationMode
 import random
 
 IMAGE_EXTS = ("*.jpg", "*.png", "*.tif", "*.gif", "*.ppm")
@@ -46,18 +47,58 @@ class ImageFolder(data.Dataset):
 
         # transforms
         self.image_transform = T.Compose([
-            T.Resize((self.image_size, self.image_size)),
-            T.ToTensor(),
+            T.Resize((self.image_size, self.image_size), interpolation=InterpolationMode.BICUBIC),
+            T.ToImage(),
+            T.ToDtype(torch.float32, scale=True),
             T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
         # GT: single channel, resized, converted to binary 0/1
         self.gt_transform = T.Compose([
-            T.Resize((self.image_size, self.image_size)),
-            T.ToTensor()
+            T.Resize((self.image_size, self.image_size), interpolation=InterpolationMode.NEAREST),
+            T.ToImage(),
+            T.ToDtype(torch.float32, scale=True)
         ])
 
     def __len__(self):
         return len(self.img_paths)
+
+    def paired_augment(self, image, GT):
+        # ---- Flip ----
+        if random.random() < 0.5:
+            image = TF.horizontal_flip(image)
+            GT = TF.horizontal_flip(GT)
+        if random.random() < 0.5:
+            image = TF.vertical_flip(image)
+            GT = TF.vertical_flip(GT)
+
+        # ---- Rotation ---- (PIL-safe)
+        if random.random() < 0.5:
+            angle = random.choice([0, 90, 180, 270])
+            image = TF.rotate(image, angle, interpolation=InterpolationMode.BICUBIC)
+            GT = TF.rotate(GT, angle, interpolation=InterpolationMode.NEAREST)
+
+        # ---- Random Resized Crop (ZOOM) ----
+        if random.random() < 0.5:
+            i, j, h, w = T.RandomResizedCrop.get_params(
+                image,
+                scale=(0.8, 1.0),
+                ratio=(0.9, 1.1)
+            )
+            image = TF.resized_crop(image, i, j, h, w,
+                                    (self.image_size, self.image_size),
+                                    interpolation=InterpolationMode.BICUBIC)
+            GT = TF.resized_crop(GT, i, j, h, w,
+                                   (self.image_size, self.image_size),
+                                   interpolation=InterpolationMode.NEAREST)
+
+        # ---- Color Jitter (image only) ----
+        if random.random() < 0.5:
+            color_aug = T.ColorJitter(
+                brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02
+            )
+            image = color_aug(image)
+
+        return image, GT
 
     def _chase_gt_name(self, img_name):
         # image.jpg -> image_1stHO.png
@@ -123,11 +164,7 @@ class ImageFolder(data.Dataset):
 
         # Data augmentation (image & GT must be transformed identically)
         if self.mode == "train" and random.random() < self.augmentation_prob:
-            # random flip, rotations could be added here (be sure GT transforms identically)
-            if random.random() < 0.5:
-                image = F.hflip(image); GT = F.hflip(GT)
-            if random.random() < 0.5:
-                image = F.vflip(image); GT = F.vflip(GT)
+            image, GT = self.paired_augment(image, GT)
 
         image = self.image_transform(image)     # (3, H, W), normalized to [-1,1]
         GT = self.gt_transform(GT)              # (1, H, W), in [0,1]
