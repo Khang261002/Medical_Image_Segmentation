@@ -16,6 +16,7 @@ class Solver(object):
         self.train_loader = train_loader
         self.valid_loader = valid_loader
         self.test_loader = test_loader
+        self.dataset = config.dataset
 
         # Models
         self.unet = None
@@ -108,7 +109,7 @@ class Solver(object):
 
     def train(self):
         os.makedirs(self.model_path, exist_ok=True)
-        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pkl')
+        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pkl')
 
         if os.path.isfile(unet_path):
             self.unet.load_state_dict(torch.load(unet_path))

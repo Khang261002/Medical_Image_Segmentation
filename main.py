@@ -9,6 +9,17 @@ def main(config):
     cudnn.benchmark = True
     if config.model_type not in ['U_Net', 'R2U_Net', 'R2U_Net++', 'AttU_Net', 'R2AttU_Net']:
         raise ValueError("model_type must be one of U_Net/R2U_Net/R2U_Net++/AttU_Net/R2AttU_Net")
+    
+    base = os.path.join(config.data_path, config.dataset)
+
+    config.train_path = os.path.join(base, 'train/')
+    config.valid_path = os.path.join(base, 'valid/')
+    config.test_path  = os.path.join(base, 'test/')
+
+    print("Using dataset:", config.dataset)
+    print("Train path :", config.train_path)
+    print("Valid path :", config.valid_path)
+    print("Test path  :", config.test_path)
 
     os.makedirs(config.model_path, exist_ok=True)
     os.makedirs(config.result_path, exist_ok=True)
@@ -22,8 +33,6 @@ def main(config):
     # config.augmentation_prob = augmentation_prob
     # config.num_epochs = epoch
     # config.lr = lr
-
-    print(config)
 
     train_loader = get_loader(image_path=config.train_path,
                               image_size=config.image_size,
@@ -43,6 +52,8 @@ def main(config):
                              num_workers=config.num_workers,
                              mode='test',
                              augmentation_prob=0.)
+
+    print(config)
 
     solver = Solver(config, train_loader, valid_loader, test_loader)
 
@@ -77,9 +88,10 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='train')
     parser.add_argument('--model_type', type=str, default='R2U_Net++', help='U_Net/R2U_Net/R2U_Net++/AttU_Net/R2AttU_Net')
     parser.add_argument('--model_path', type=str, default='./models')
-    parser.add_argument('--train_path', type=str, default='./data/SkinCancer/train/')       # CHASE_DB1, DRIVE, STARE, Lung, SkinCancer
-    parser.add_argument('--valid_path', type=str, default='./data/SkinCancer/valid/')       # CHASE_DB1, DRIVE, STARE, Lung, SkinCancer
-    parser.add_argument('--test_path', type=str, default='./data/SkinCancer/test/')         # CHASE_DB1, DRIVE, STARE, Lung, SkinCancer
+    parser.add_argument('--dataset', type=str, default='SkinCancer',
+                        choices=['CHASE_DB1', 'DRIVE', 'STARE', 'Lung', 'SkinCancer'],
+                        help='Select which dataset to train on.')
+    parser.add_argument('--data_path', type=str, default='./data/')
     parser.add_argument('--result_path', type=str, default='./result/')
 
     config = parser.parse_args()
