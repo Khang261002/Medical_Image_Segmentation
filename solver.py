@@ -236,7 +236,7 @@ class Solver(object):
             acc = SE = SP = PC = F1 = JS = DC = None
 
         # save sample outputs
-        save_dir = os.path.join(self.model_path, f"{self.model_type}-{self.num_epochs}-{self.lr:.6f}")
+        save_dir = os.path.join(self.model_path, f"{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}-samples")
         self.save_samples(save_dir)
         os.makedirs(self.result_path, exist_ok=True)
         with open(os.path.join(self.result_path, 'result.csv'), 'a', newline='') as f:
