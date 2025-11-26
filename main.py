@@ -15,13 +15,13 @@ def main(config):
     config.result_path = os.path.join(config.result_path, config.model_type)
     os.makedirs(config.result_path, exist_ok=True)
 
-    lr = random.random()*0.0005 + 0.0000005
-    augmentation_prob= random.random()*0.7
-    epoch = random.choice([100, 150, 200, 250])
+    # lr = random.random()*0.0005 + 0.0000005
+    # augmentation_prob= random.random()*0.7
+    # epoch = random.choice([100, 150, 200, 250])
 
-    config.augmentation_prob = augmentation_prob
-    config.num_epochs = epoch
-    config.lr = lr
+    # config.augmentation_prob = augmentation_prob
+    # config.num_epochs = epoch
+    # config.lr = lr
 
     print(config)
 
@@ -58,7 +58,7 @@ if __name__ == '__main__':
 
     # model hyper-parameters
     parser.add_argument('--image_size', type=int, default=224)
-    parser.add_argument('--t', type=int, default=3, help='t for Recurrent step of R2U_Net, R2U_Net++, or R2AttU_Net')
+    parser.add_argument('--t', type=int, default=2, help='t for Recurrent step of R2U_Net, R2U_Net++, or R2AttU_Net')
     
     # training hyper-parameters
     parser.add_argument('--img_ch', type=int, default=3)
