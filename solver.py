@@ -99,12 +99,8 @@ class Solver(object):
                 if len(collected_images) >= num_samples:
                     break
 
-        # ---- Save exactly (num_samples) samples ----
-        for idx in range(num_samples):
-            img = collected_images[idx]
-            gt = collected_gts[idx]
-            sr = collected_srs[idx]
-
+        # ---- Save all samples with max number of (num_samples) samples ----
+        for idx, img, gt, sr in enumerate(zip(collected_images, collected_gts, collected_srs)):
             # make GT & SR 3-channel
             if gt.size(0) == 1:
                 gt_viz = gt.repeat(3,1,1)
