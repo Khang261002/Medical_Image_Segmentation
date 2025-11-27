@@ -31,7 +31,7 @@ class ImageFolder(data.Dataset):
       image (C,H,W) float normalized to ~[-1,1],
       GT    (1,H,W) float {0,1}
     """
-    def __init__(self, root, image_size=256, mode="train", augmentation_prob=0.4):
+    def __init__(self, root, image_size=256, mode="train", augmentation_prob=0.7):
         self.root = root
         self.mode = mode
         self.augmentation_prob = augmentation_prob
