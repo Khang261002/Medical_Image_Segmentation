@@ -73,24 +73,39 @@ class Solver(object):
         """Zero the gradient buffers."""
         self.unet.zero_grad()
 
-    def save_samples(self, save_dir):
+    def save_samples(self, save_dir, num_samples=3):
         os.makedirs(save_dir, exist_ok=True)
         self.unet.eval()
 
+        collected_images = []
+        collected_gts = []
+        collected_srs = []
+
+        # ---- Collect exactly (num_samples) samples ----
         with torch.no_grad():
             for images, GT in self.test_loader:
                 images = images.to(self.device)
                 GT = GT.to(self.device)
                 SR = torch.sigmoid(self.unet(images))
-                break
 
-        n = min(3, images.size(0))
-        for i in range(n):
-            img = images[i].cpu()
-            gt = GT[i].cpu()
-            sr = SR[i].cpu()
+                for i in range(images.size(0)):
+                    collected_images.append(images[i].cpu())
+                    collected_gts.append(GT[i].cpu())
+                    collected_srs.append(SR[i].cpu())
 
-            # make GT & SR 3-channel for visualization
+                    if len(collected_images) >= num_samples:
+                        break
+
+                if len(collected_images) >= num_samples:
+                    break
+
+        # ---- Save exactly (num_samples) samples ----
+        for idx in range(num_samples):
+            img = collected_images[idx]
+            gt = collected_gts[idx]
+            sr = collected_srs[idx]
+
+            # make GT & SR 3-channel
             if gt.size(0) == 1:
                 gt_viz = gt.repeat(3,1,1)
             else:
@@ -100,12 +115,12 @@ class Solver(object):
             else:
                 sr_viz = sr
 
-            img = (img.permute(1,2,0) * 255).byte().numpy()
-            gt_viz = (gt_viz.permute(1,2,0) * 255).byte().numpy()
-            sr_viz = (sr_viz.permute(1,2,0) * 255).byte().numpy()
+            img = (img.permute(1,2,0) * 255).clamp(0,255).byte().numpy()
+            gt_viz = (gt_viz.permute(1,2,0) * 255).clamp(0,255).byte().numpy()
+            sr_viz = (sr_viz.permute(1,2,0) * 255).clamp(0,255).byte().numpy()
 
             combined = np.vstack([img, gt_viz, sr_viz])
-            Image.fromarray(combined).save(os.path.join(save_dir, f"sample_{i+1}.png"))
+            Image.fromarray(combined).save(os.path.join(save_dir, f"sample_{idx+1}.png"))
 
     def train(self):
         os.makedirs(self.model_path, exist_ok=True)
@@ -237,7 +252,7 @@ class Solver(object):
 
         # save sample outputs
         save_dir = os.path.join(self.model_path, f"{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}-samples")
-        self.save_samples(save_dir)
+        self.save_samples(save_dir, num_samples=5)
         os.makedirs(self.result_path, exist_ok=True)
         with open(os.path.join(self.result_path, 'result.csv'), 'a', newline='') as f:
             wr = csv.writer(f)
