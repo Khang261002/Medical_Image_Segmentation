@@ -8,6 +8,7 @@ from torchvision.transforms import v2 as T
 from torchvision.transforms.v2 import functional as TF
 from torchvision.transforms.v2 import InterpolationMode
 import random
+import numpy as np
 
 IMAGE_EXTS = ("*.jpg", "*.png", "*.tif", "*.gif", "*.ppm")
 
@@ -71,7 +72,7 @@ class ImageFolder(data.Dataset):
             image = TF.vertical_flip(image)
             GT = TF.vertical_flip(GT)
 
-        # ---- Rotation ---- (PIL-safe)
+        # ---- Rotation ----
         if random.random() < 0.5:
             angle = random.choice([0, 90, 180, 270])
             image = TF.rotate(image, angle, interpolation=InterpolationMode.BICUBIC)
@@ -97,6 +98,20 @@ class ImageFolder(data.Dataset):
                 brightness=0.2, contrast=0.2, saturation=0.2, hue=0.02
             )
             image = color_aug(image)
+
+        # ---- Gaussian Blur (image only) ----
+        if random.random() < 0.5:
+            image = T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))(image)
+
+        # ---- Gaussian Noise (image only) ----
+        if random.random() < 0.5:
+            image = np.array(image)
+            noise = np.random.normal(0, 5, image.shape).astype(np.uint8)
+            image = Image.fromarray(np.clip(image + noise, 0, 255))
+
+        # ---- Random Brightness drop (image only) ----
+        if random.random() < 0.5:
+            image = TF.adjust_brightness(image, random.uniform(0.5, 0.9))
 
         return image, GT
 
@@ -175,6 +190,6 @@ class ImageFolder(data.Dataset):
         return image, GT
 
 
-def get_loader(image_path, image_size, batch_size, mode, num_workers=2, augmentation_prob=0.4):
+def get_loader(image_path, image_size, batch_size, mode, num_workers=2, augmentation_prob=0.7):
     dataset = ImageFolder(image_path, image_size, mode, augmentation_prob)
     return data.DataLoader(dataset, batch_size=batch_size, shuffle=(mode=="train"), num_workers=num_workers)
