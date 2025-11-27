@@ -100,7 +100,7 @@ class Solver(object):
                     break
 
         # ---- Save all samples with max number of (num_samples) samples ----
-        for idx, img, gt, sr in enumerate(zip(collected_images, collected_gts, collected_srs)):
+        for idx, (img, gt, sr) in enumerate(zip(collected_images, collected_gts, collected_srs)):
             # make GT & SR 3-channel
             if gt.size(0) == 1:
                 gt_viz = gt.repeat(3,1,1)
@@ -117,6 +117,28 @@ class Solver(object):
 
             combined = np.vstack([img, gt_viz, sr_viz])
             Image.fromarray(combined).save(os.path.join(save_dir, f"sample_{idx+1}.png"))
+
+    def ensure_csv_has_header(csv_path, header):
+        # If file does not exist → create and write header
+        if not os.path.exists(csv_path):
+            with open(csv_path, "w", newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+            return
+
+        # If file exists → read first line
+        with open(csv_path, "r") as f:
+            first_line = f.readline().strip()
+
+        # If header missing → prepend it
+        if first_line != ",".join(header):
+            # Read all existing lines
+            with open(csv_path, "r") as f:
+                existing = f.read()
+
+            # Rewrite with header on first line
+            with open(csv_path, "w", newline='') as f:
+                f.write(",".join(header) + "\n" + existing)
 
     def train(self):
         os.makedirs(self.model_path, exist_ok=True)
@@ -249,7 +271,16 @@ class Solver(object):
         # save sample outputs
         save_dir = os.path.join(self.model_path, f"{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}-samples")
         self.save_samples(save_dir, num_samples=5)
+
         os.makedirs(self.result_path, exist_ok=True)
-        with open(os.path.join(self.result_path, 'result.csv'), 'a', newline='') as f:
+        csv_path = os.path.join(self.result_path, 'result.csv')
+
+        # Ensure header exists
+        header = ["Model", "Dataset", "LR", "AugProb", "Acc", "SE", "SP", "PC", "F1", "JS", "DC"]
+        self.ensure_csv_has_header(csv_path, header)
+
+        # Append results
+        with open(csv_path, 'a', newline='') as f:
             wr = csv.writer(f)
-            wr.writerow([self.model_type, acc, SE, SP, PC, F1, JS, DC, self.lr])
+            wr.writerow([self.model_type, self.dataset, self.lr, self.augmentation_prob,
+                        acc, SE, SP, PC, F1, JS, DC])
