@@ -118,7 +118,7 @@ class Solver(object):
             combined = np.vstack([img, gt_viz, sr_viz])
             Image.fromarray(combined).save(os.path.join(save_dir, f"sample_{idx+1}.png"))
 
-    def ensure_csv_has_header(csv_path, header):
+    def ensure_csv_has_header(self, csv_path, header):
         # If file does not exist → create and write header
         if not os.path.exists(csv_path):
             with open(csv_path, "w", newline='') as f:
@@ -147,6 +147,7 @@ class Solver(object):
         if os.path.isfile(unet_path):
             self.unet.load_state_dict(torch.load(unet_path))
             print(f'{self.model_type} loaded from {unet_path}')
+            self.test()
             return
 
         best_unet_score = -1.0
@@ -236,6 +237,12 @@ class Solver(object):
                 best_unet_score = unet_score
                 torch.save(self.unet.state_dict(), unet_path)
                 print(f"Saved best model (score={best_unet_score:.4f}) to {unet_path}")
+
+        self.test()
+
+    def test(self):
+        os.makedirs(self.model_path, exist_ok=True)
+        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pkl')
 
         # Test (load best model)
         self.unet.load_state_dict(torch.load(unet_path))
