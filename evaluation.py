@@ -15,9 +15,9 @@ def get_accuracy(SR, GT, threshold=0.5):
 
     corr = torch.sum(SRb==GTb)
     tensor_size = SRb.size(0)*SRb.size(1)*SRb.size(2)*SRb.size(3)
-    acc = float(corr) / float(tensor_size)
+    AC = float(corr) / float(tensor_size)
 
-    return acc
+    return AC
 
 def get_sensitivity(SR, GT, threshold=0.5):
     # Sensitivity == Recall
@@ -57,7 +57,6 @@ def get_precision(SR, GT, threshold=0.5):
     return PC
 
 def get_F1(SR, GT, threshold=0.5):
-    # Sensitivity == Recall
     SE = get_sensitivity(SR, GT, threshold=threshold)
     PC = get_precision(SR, GT, threshold=threshold)
 

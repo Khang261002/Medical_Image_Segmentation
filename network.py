@@ -24,7 +24,7 @@ def init_weights(net, init_type='normal', gain=0.02):
             init.normal_(m.weight.data, 1.0, gain)
             init.constant_(m.bias.data, 0.0)
 
-    print('initialize network with %s' % init_type)
+    print('Initialize network with %s' % init_type)
     net.apply(init_func)
 
 
@@ -50,8 +50,7 @@ class up_conv(nn.Module):
     def __init__(self, ch_in, ch_out):
         super(up_conv, self).__init__()
         self.up = nn.Sequential(
-            nn.Upsample(scale_factor=2),
-            nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.ConvTranspose2d(ch_in, ch_out, kernel_size=2, stride=2),
 		    nn.BatchNorm2d(ch_out),
 			nn.ReLU(inplace=True)
         )
@@ -99,12 +98,13 @@ class RRCNN_block(nn.Module):
 
 class NestedR2UBlock(nn.Module):
     def __init__(self, ch_in, ch_out, t=2):
-        super().__init__()
+        super(NestedR2UBlock, self).__init__()
         self.rrcnn = RRCNN_block(ch_in, ch_out, t=t)
 
     def forward(self, x):
-        x1 = torch.cat(x, dim=1)
-        return self.rrcnn(x1)
+        if isinstance(x, (list, tuple)):
+            x = torch.cat(x, dim=1)
+        return self.rrcnn(x)
 
 
 class Attention_block(nn.Module):
@@ -287,24 +287,37 @@ class R2U_NetPP(nn.Module):
         self.X_3_0 = RRCNN_block(nb_filter[2], nb_filter[3], t=t)
         self.X_4_0 = RRCNN_block(nb_filter[3], nb_filter[4], t=t)
 
+        # Up-sampling layers
+        self.up1_0 = up_conv(ch_in=nb_filter[1], ch_out=nb_filter[0])
+        self.up1_1 = up_conv(ch_in=nb_filter[1], ch_out=nb_filter[0])
+        self.up1_2 = up_conv(ch_in=nb_filter[1], ch_out=nb_filter[0])
+        self.up1_3 = up_conv(ch_in=nb_filter[1], ch_out=nb_filter[0])
+
+        self.up2_0 = up_conv(ch_in=nb_filter[2], ch_out=nb_filter[1])
+        self.up2_1 = up_conv(ch_in=nb_filter[2], ch_out=nb_filter[1])
+        self.up2_2 = up_conv(ch_in=nb_filter[2], ch_out=nb_filter[1])
+
+        self.up3_0 = up_conv(ch_in=nb_filter[3], ch_out=nb_filter[2])
+        self.up3_1 = up_conv(ch_in=nb_filter[3], ch_out=nb_filter[2])
+
+        self.up4_0 = up_conv(ch_in=nb_filter[4], ch_out=nb_filter[3])
+
         # Nested decoder nodes
-        self.X_0_1 = NestedR2UBlock(nb_filter[0] + nb_filter[1], nb_filter[0], t=t)
-        self.X_1_1 = NestedR2UBlock(nb_filter[1] + nb_filter[2], nb_filter[1], t=t)
-        self.X_2_1 = NestedR2UBlock(nb_filter[2] + nb_filter[3], nb_filter[2], t=t)
-        self.X_3_1 = NestedR2UBlock(nb_filter[3] + nb_filter[4], nb_filter[3], t=t)
+        self.X_0_1 = NestedR2UBlock(nb_filter[0]*2, nb_filter[0], t=t)
+        self.X_1_1 = NestedR2UBlock(nb_filter[1]*2, nb_filter[1], t=t)
+        self.X_2_1 = NestedR2UBlock(nb_filter[2]*2, nb_filter[2], t=t)
+        self.X_3_1 = NestedR2UBlock(nb_filter[3]*2, nb_filter[3], t=t)
 
-        self.X_0_2 = NestedR2UBlock(nb_filter[0]*2 + nb_filter[1], nb_filter[0], t=t)
-        self.X_1_2 = NestedR2UBlock(nb_filter[1]*2 + nb_filter[2], nb_filter[1], t=t)
-        self.X_2_2 = NestedR2UBlock(nb_filter[2]*2 + nb_filter[3], nb_filter[2], t=t)
+        self.X_0_2 = NestedR2UBlock(nb_filter[0]*3, nb_filter[0], t=t)
+        self.X_1_2 = NestedR2UBlock(nb_filter[1]*3, nb_filter[1], t=t)
+        self.X_2_2 = NestedR2UBlock(nb_filter[2]*3, nb_filter[2], t=t)
 
-        self.X_0_3 = NestedR2UBlock(nb_filter[0]*3 + nb_filter[1], nb_filter[0], t=t)
-        self.X_1_3 = NestedR2UBlock(nb_filter[1]*3 + nb_filter[2], nb_filter[1], t=t)
+        self.X_0_3 = NestedR2UBlock(nb_filter[0]*4, nb_filter[0], t=t)
+        self.X_1_3 = NestedR2UBlock(nb_filter[1]*4, nb_filter[1], t=t)
 
-        self.X_0_4 = NestedR2UBlock(nb_filter[0]*4 + nb_filter[1], nb_filter[0], t=t)
+        self.X_0_4 = NestedR2UBlock(nb_filter[0]*5, nb_filter[0], t=t)
 
-        self.up = nn.Upsample(scale_factor=2)
         self.pool = nn.MaxPool2d(2)
-
         self.final = nn.Conv2d(nb_filter[0], output_ch, 1)
 
     def forward(self, x):
@@ -314,19 +327,19 @@ class R2U_NetPP(nn.Module):
         X_3_0 = self.X_3_0(self.pool(X_2_0))
         X_4_0 = self.X_4_0(self.pool(X_3_0))
 
-        X_0_1 = self.X_0_1([X_0_0, self.up(X_1_0)])
-        X_1_1 = self.X_1_1([X_1_0, self.up(X_2_0)])
-        X_2_1 = self.X_2_1([X_2_0, self.up(X_3_0)])
-        X_3_1 = self.X_3_1([X_3_0, self.up(X_4_0)])
+        X_0_1 = self.X_0_1([X_0_0, self.up1_0(X_1_0)])
+        X_1_1 = self.X_1_1([X_1_0, self.up2_0(X_2_0)])
+        X_2_1 = self.X_2_1([X_2_0, self.up3_0(X_3_0)])
+        X_3_1 = self.X_3_1([X_3_0, self.up4_0(X_4_0)])
 
-        X_0_2 = self.X_0_2([X_0_0, X_0_1, self.up(X_1_1)])
-        X_1_2 = self.X_1_2([X_1_0, X_1_1, self.up(X_2_1)])
-        X_2_2 = self.X_2_2([X_2_0, X_2_1, self.up(X_3_1)])
+        X_0_2 = self.X_0_2([X_0_0, X_0_1, self.up1_1(X_1_1)])
+        X_1_2 = self.X_1_2([X_1_0, X_1_1, self.up2_1(X_2_1)])
+        X_2_2 = self.X_2_2([X_2_0, X_2_1, self.up3_1(X_3_1)])
 
-        X_0_3 = self.X_0_3([X_0_0, X_0_1, X_0_2, self.up(X_1_2)])
-        X_1_3 = self.X_1_3([X_1_0, X_1_1, X_1_2, self.up(X_2_2)])
+        X_0_3 = self.X_0_3([X_0_0, X_0_1, X_0_2, self.up1_2(X_1_2)])
+        X_1_3 = self.X_1_3([X_1_0, X_1_1, X_1_2, self.up2_2(X_2_2)])
 
-        X_0_4 = self.X_0_4([X_0_0, X_0_1, X_0_2, X_0_3, self.up(X_1_3)])
+        X_0_4 = self.X_0_4([X_0_0, X_0_1, X_0_2, X_0_3, self.up1_3(X_1_3)])
 
         out = self.final(X_0_4)
         return out

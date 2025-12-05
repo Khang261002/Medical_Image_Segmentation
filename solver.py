@@ -6,8 +6,16 @@ from torch import optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 import torch.nn.functional as F
 from evaluation import *
-from network import U_Net, R2U_Net, R2U_NetPP, AttU_Net, R2AttU_Net
+from network import *
 import csv
+
+
+class DiceLoss(nn.Module):
+    def forward(self, logits, targets, eps=1e-7):
+        probs = torch.sigmoid(logits)
+        num = 2 * (probs * targets).sum()
+        den = probs.sum() + targets.sum() + eps
+        return 1 - num / den
 
 
 class Solver(object):
@@ -23,7 +31,12 @@ class Solver(object):
         self.optimizer = None
         self.img_ch = config.img_ch
         self.output_ch = config.output_ch
-        self.criterion = torch.nn.BCELoss()
+        # self.criterion = torch.nn.BCELoss()
+        self.dice = DiceLoss()
+        self.criterion = lambda logits, targets: (
+            F.binary_cross_entropy_with_logits(logits, targets) +
+            self.dice(logits, targets)
+        )
         self.augmentation_prob = config.augmentation_prob
         self.model_type = config.model_type
         self.t = config.t
@@ -57,8 +70,9 @@ class Solver(object):
         elif self.model_type == 'R2AttU_Net':
             self.unet = R2AttU_Net(img_ch=self.img_ch, output_ch=self.output_ch, t=self.t)
 
+        init_weights(self.unet, init_type='kaiming')
         self.optimizer = optim.Adam(self.unet.parameters(), lr=self.lr, betas=(self.beta1, self.beta2))
-        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=self.num_epochs, eta_min=1e-6)
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=max(100, self.num_epochs), eta_min=1e-6)
         self.unet.to(self.device)
 
         # self.print_network(self.unet, self.model_type)
@@ -71,7 +85,7 @@ class Solver(object):
 
     def reset_grad(self):
         """Zero the gradient buffers."""
-        self.unet.zero_grad()
+        self.optimizer.zero_grad()
 
     def save_samples(self, save_dir, num_samples=3):
         os.makedirs(save_dir, exist_ok=True)
@@ -142,7 +156,7 @@ class Solver(object):
 
     def train(self):
         os.makedirs(self.model_path, exist_ok=True)
-        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pkl')
+        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pth')
 
         if os.path.isfile(unet_path):
             self.unet.load_state_dict(torch.load(unet_path))
@@ -158,7 +172,7 @@ class Solver(object):
             self.unet.train()
             epoch_loss = 0.0
 
-            acc = SE = SP = PC = F1 = JS = DC = 0.0
+            AC = SE = SP = PC = F1 = JS = DC = 0.0
             length = 0
 
             for images, GT in self.train_loader:
@@ -169,18 +183,17 @@ class Solver(object):
                 if GT.sum().item() == 0:
                     continue
 
-                SR = torch.sigmoid(self.unet(images))
-                SR_flat = SR.view(SR.size(0), -1)
-                GT_flat = GT.view(GT.size(0), -1)
+                logits = self.unet(images)
+                SR = torch.sigmoid(logits)
 
-                loss = self.criterion(SR_flat, GT_flat)
+                loss = self.criterion(logits, GT)
                 epoch_loss += loss.item()
 
                 self.reset_grad()
                 loss.backward()
                 self.optimizer.step()
 
-                acc += get_accuracy(SR, GT)
+                AC += get_accuracy(SR, GT)
                 SE += get_sensitivity(SR, GT)
                 SP += get_specificity(SR, GT)
                 PC += get_precision(SR, GT)
@@ -190,16 +203,16 @@ class Solver(object):
                 length += images.size(0)
 
             if length > 0:
-                acc /= length; SE /= length; SP /= length; PC /= length
+                AC /= length; SE /= length; SP /= length; PC /= length
                 F1 /= length; JS /= length; DC /= length
             else:
-                acc = SE = SP = PC = F1 = JS = DC = None
+                AC = SE = SP = PC = F1 = JS = DC = None
 
-            print(f'Loss: {epoch_loss:.4f}\n[Training] Acc: {acc}, SE: {SE}, SP: {SP}, PC: {PC}, F1: {F1}, JS: {JS}, DC: {DC}')
+            print(f'Loss: {epoch_loss:.4f}\n[Training] Acc: {AC}, SE: {SE}, SP: {SP}, PC: {PC}, F1: {F1}, JS: {JS}, DC: {DC}')
 
             # Validation
             self.unet.eval()
-            acc = SE = SP = PC = F1 = JS = DC = 0.0
+            AC = SE = SP = PC = F1 = JS = DC = 0.0
             length = 0
 
             with torch.no_grad():
@@ -211,7 +224,7 @@ class Solver(object):
                         continue
 
                     SR = torch.sigmoid(self.unet(images))
-                    acc += get_accuracy(SR, GT)
+                    AC += get_accuracy(SR, GT)
                     SE += get_sensitivity(SR, GT)
                     SP += get_specificity(SR, GT)
                     PC += get_precision(SR, GT)
@@ -221,12 +234,12 @@ class Solver(object):
                     length += images.size(0)
 
             if length > 0:
-                acc /= length; SE /= length; SP /= length; PC /= length
+                AC /= length; SE /= length; SP /= length; PC /= length
                 F1 /= length; JS /= length; DC /= length
             else:
-                acc = SE = SP = PC = F1 = JS = DC = None
+                AC = SE = SP = PC = F1 = JS = DC = None
 
-            print(f'[Validation] Acc: {acc}, SE: {SE}, SP: {SP}, PC: {PC}, F1: {F1}, JS: {JS}, DC: {DC}')
+            print(f'[Validation] Acc: {AC}, SE: {SE}, SP: {SP}, PC: {PC}, F1: {F1}, JS: {JS}, DC: {DC}')
 
             # Decay learning rate
             self.scheduler.step()
@@ -242,13 +255,13 @@ class Solver(object):
 
     def test(self):
         os.makedirs(self.model_path, exist_ok=True)
-        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pkl')
+        unet_path = os.path.join(self.model_path, f'{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}.pth')
 
         # Test (load best model)
         self.unet.load_state_dict(torch.load(unet_path))
         self.unet.eval()
 
-        acc = SE = SP = PC = F1 = JS = DC = 0.0
+        AC = SE = SP = PC = F1 = JS = DC = 0.0
         length = 0
 
         with torch.no_grad():
@@ -260,7 +273,7 @@ class Solver(object):
                     continue
 
                 SR = torch.sigmoid(self.unet(images))
-                acc += get_accuracy(SR, GT)
+                AC += get_accuracy(SR, GT)
                 SE += get_sensitivity(SR, GT)
                 SP += get_specificity(SR, GT)
                 PC += get_precision(SR, GT)
@@ -270,10 +283,10 @@ class Solver(object):
                 length += images.size(0)
 
         if length > 0:
-            acc /= length; SE /= length; SP /= length; PC /= length
+            AC /= length; SE /= length; SP /= length; PC /= length
             F1 /= length; JS /= length; DC /= length
         else:
-            acc = SE = SP = PC = F1 = JS = DC = None
+            AC = SE = SP = PC = F1 = JS = DC = None
 
         # save sample outputs
         save_dir = os.path.join(self.model_path, f"{self.model_type}-{self.dataset}-{self.num_epochs}-{self.lr:.4f}-{self.augmentation_prob:.4f}-samples")
@@ -283,11 +296,11 @@ class Solver(object):
         csv_path = os.path.join(self.result_path, 'result.csv')
 
         # Ensure header exists
-        header = ["Model", "Dataset", "LR", "AugProb", "Acc", "SE", "SP", "PC", "F1", "JS", "DC"]
+        header = ["Model", "Dataset", "LR", "AugProb", "AC", "SE", "SP", "PC", "F1", "JS", "DC"]
         self.ensure_csv_has_header(csv_path, header)
 
         # Append results
         with open(csv_path, 'a', newline='') as f:
             wr = csv.writer(f)
             wr.writerow([self.model_type, self.dataset, self.lr, self.augmentation_prob,
-                        acc, SE, SP, PC, F1, JS, DC])
+                        AC, SE, SP, PC, F1, JS, DC])
